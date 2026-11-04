@@ -1,0 +1,1806 @@
+========================================
+ARQUIVO: ./StempCaseStudy/App/StempCaseStudyApp.swift
+========================================
+//
+//  StempCaseStudyApp.swift
+//  StempCaseStudy
+//
+//  Recorte de estudo de caso do app "Stemp" (Apple Developer Academy).
+//  Sem API, sem login, sem Airtable.
+//
+import SwiftUI
+
+@main
+struct StempCaseStudyApp: App {
+    @StateObject private var store = EventStore()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environmentObject(store)
+        }
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/App/EventStore.swift
+========================================
+//
+//  EventStore.swift
+//  StempCaseStudy
+//
+//  Substitui o Airtable + WebService + EventsViewModel do app original.
+//  Fonte única da verdade para as telas "Desafios", "Dashboard" e "Eventos"
+//  e, via EventStorage (App Group), para o Widget.
+//
+import SwiftUI
+import WidgetKit
+
+final class EventStore: ObservableObject {
+    @Published private(set) var events: [EventDetail] = []
+
+    private let seenKey = "seenIdEvents"
+
+    init() {
+        events = EventStorage.loadEvents()
+    }
+
+    // MARK: - Leitura
+
+    /// Eventos de hoje em diante, ordenados (mesma regra do Airtable original).
+    var upcomingEvents: [EventDetail] {
+        EventStorage.upcoming(events)
+    }
+
+    var nextEvent: EventDetail? {
+        upcomingEvents.first
+    }
+
+    var newEventsCount: Int {
+        let seen = seenIds
+        return upcomingEvents.filter { $0.time > Date() && !seen.contains($0.id) }.count
+    }
+
+    // MARK: - Escrita
+
+    func add(_ event: EventDetail) {
+        events.append(event)
+        persist()
+    }
+
+    func remove(id: String) {
+        events.removeAll { $0.id == id }
+        persist()
+    }
+
+    func removeAll() {
+        events.removeAll()
+        persist()
+    }
+
+    func loadSamples() {
+        events.append(contentsOf: SampleData.events())
+        persist()
+    }
+
+    // MARK: - "Novo" (igual ao EventsViewModel original)
+
+    private var seenIds: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: seenKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: seenKey) }
+    }
+
+    func isNew(_ event: EventDetail) -> Bool {
+        !seenIds.contains(event.id)
+    }
+
+    func markAsSeen(_ event: EventDetail) {
+        seenIds.insert(event.id)
+        objectWillChange.send()
+    }
+
+    // MARK: - Persistência
+
+    private func persist() {
+        EventStorage.saveEvents(events)
+        let currentIds = Set(events.map(\.id))
+        seenIds = seenIds.intersection(currentIds)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/App/SampleData.swift
+========================================
+//
+//  SampleData.swift
+//  StempCaseStudy
+//
+//  Dados 100% fictícios, gerados relativos à data de hoje.
+//
+import Foundation
+
+enum SampleData {
+    static func events(from now: Date = Date()) -> [EventDetail] {
+        let cal = Calendar.current
+
+        func day(_ offset: Int, hour: Int, minute: Int = 0) -> Date {
+            let base = cal.date(byAdding: .day, value: offset, to: now) ?? now
+            return cal.date(bySettingHour: hour, minute: minute, second: 0, of: base) ?? base
+        }
+
+        func make(_ kind: EventKind,
+                  _ name: String,
+                  _ time: Date,
+                  _ desc: String,
+                  materials: [SupportMaterial] = [],
+                  deliverables: [Deliverable] = []) -> EventDetail {
+            EventDetail(
+                name: name,
+                typeEvent: kind.rawValue,
+                time: time,
+                icon: kind.defaultIcon,
+                colorHex: kind.defaultColorHex,
+                description: desc,
+                supportMaterial: materials,
+                deliverables: deliverables
+            )
+        }
+
+        return [
+            make(.challenge, "Challenge 3 · Meu primeiro app",
+                 day(2, hour: 14),
+                 "Desenvolva um **protótipo funcional** em SwiftUI resolvendo um problema do dia a dia.\n\nEntregue o código e uma apresentação curta.",
+                 materials: [
+                    SupportMaterial(filename: "Briefing-Challenge3.pdf", url: "https://example.com/briefing.pdf"),
+                    SupportMaterial(filename: "Template-Keynote.key", url: "https://example.com/template.key")
+                 ],
+                 deliverables: [
+                    Deliverable(title: "Código", dueDate: day(9, hour: 18), url: "https://example.com/ch3-code"),
+                    Deliverable(title: "Keynote", dueDate: day(9, hour: 18), url: "https://example.com/ch3-keynote")
+                 ]),
+            make(.workshop, "Workshop de WidgetKit",
+                 day(4, hour: 15, minute: 30),
+                 "Introdução a **WidgetKit**: timelines, providers e App Groups."),
+            make(.bridge, "Bridge · Design e Tecnologia",
+                 day(6, hour: 14),
+                 "Alinhamento entre as equipes de design e desenvolvimento.",
+                 deliverables: [
+                    Deliverable(title: "Protótipo", dueDate: day(8, hour: 12), url: "https://example.com/proto")
+                 ]),
+            make(.presentation, "App Review",
+                 day(12, hour: 16),
+                 "Apresentação dos projetos para mentores e convidados."),
+            make(.reflection, "Reflection da Sprint",
+                 day(15, hour: 17),
+                 "Momento de retrospectiva individual e em grupo.")
+        ]
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/App/ContentView.swift
+========================================
+// xcode: set sdk=iOS
+
+//
+//  ContentView.swift
+//  StempCaseStudy
+//
+//  Mesma TabBar do AppTabBarView original. A primeira aba (antes "Registros",
+//  com calendário e slider de presença) virou "Desafios": o formulário que
+//  alimenta Eventos, Dashboard e o Widget.
+//
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject private var store: EventStore
+
+    init() {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = UIColor(Color.bg900)
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
+
+    var body: some View {
+        TabView {
+            NavigationStack {
+                CreateChallengeView()
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .tabItem {
+                Image(systemName: "square.and.pencil")
+                Text("Desafios")
+            }
+
+            DashboardView()
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .tabItem {
+                    Image(systemName: "rectangle.3.offgrid")
+                    Text("Dashboard")
+                }
+
+            EventsView()
+                .badge(store.newEventsCount)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .tabItem {
+                    Image(systemName: "star.fill")
+                    Text("Eventos")
+                }
+
+            NavigationStack {
+                StudyCasePlaceholderView(title: "Perfil", icon: "person.crop.circle.fill")
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .tabItem {
+                Image(systemName: "person.fill")
+                Text("Perfil")
+            }
+        }
+        .accentColor(Color.gradientStart)
+        .preferredColorScheme(.dark)
+    }
+}
+
+#Preview {
+    ContentView()
+        .environmentObject(EventStore())
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Shared/EventStorage.swift
+========================================
+//
+//  EventStorage.swift
+//  StempCaseStudy  ·  Shared (App + Widget)
+//
+//  Camada de persistência compartilhada via App Group.
+//  O app grava aqui; o Widget (WidgetKit) lê daqui.
+//
+//  ⚠️ Troque `appGroupID` pelo App Group que você criar em
+//  Signing & Capabilities (no target do App E no target do Widget).
+//  Se o App Group não existir, cai no UserDefaults.standard
+//  (o app funciona, mas o Widget não enxerga os dados).
+//
+import Foundation
+
+enum EventStorage {
+    static let appGroupID = "group.com.example.stempcasestudy"
+    static let eventsKey = "cachedEvents"
+
+    static var defaults: UserDefaults {
+        UserDefaults(suiteName: appGroupID) ?? .standard
+    }
+
+    private static var encoder: JSONEncoder {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }
+
+    private static var decoder: JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }
+
+    static func loadEvents() -> [EventDetail] {
+        guard let data = defaults.data(forKey: eventsKey),
+              let events = try? decoder.decode([EventDetail].self, from: data)
+        else { return [] }
+        return events
+    }
+
+    static func saveEvents(_ events: [EventDetail]) {
+        guard let data = try? encoder.encode(events) else { return }
+        defaults.set(data, forKey: eventsKey)
+    }
+
+    /// Mesma regra do Airtable original: `{Datetime} >= TODAY()`, ordenado por data crescente.
+    static func upcoming(_ events: [EventDetail], from now: Date = Date()) -> [EventDetail] {
+        let startOfToday = Calendar.current.startOfDay(for: now)
+        return events
+            .filter { $0.time >= startOfToday }
+            .sorted { $0.time < $1.time }
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Shared/ColorExtension.swift
+========================================
+//
+//  ColorExtension.swift
+//  StempCaseStudy  ·  Shared (App + Widget)
+//
+import SwiftUI
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r = Double((int >> 16) & 0xFF) / 255
+        let g = Double((int >> 8) & 0xFF) / 255
+        let b = Double(int & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Shared/EventKind.swift
+========================================
+//
+//  EventKind.swift
+//  StempCaseStudy  ·  Shared (App + Widget)
+//
+//  Tipos de evento da Academy. Ícone e cor padrão vêm do EventItem original.
+//
+import Foundation
+
+enum EventKind: String, Codable, CaseIterable, Identifiable {
+    case challenge    = "Challenge"
+    case workshop     = "Workshop"
+    case presentation = "Apresentação"
+    case bridge       = "Bridge"
+    case integration  = "Integration"
+    case events       = "Eventos"
+    case reflection   = "Reflection"
+
+    var id: String { rawValue }
+
+    var defaultIcon: String {
+        switch self {
+        case .challenge:    return "sparkle.text.clipboard.fill"
+        case .workshop:     return "book.and.wrench.fill"
+        case .presentation: return "play.tv"
+        case .bridge:       return "ruler.fill"
+        case .integration:  return "figure.socialdance.circle.fill"
+        case .events:       return "apple.logo"
+        case .reflection:   return "brain.head.profile.fill"
+        }
+    }
+
+    var defaultColorHex: String {
+        switch self {
+        case .challenge:    return "#EF9F27"
+        case .workshop:     return "#378ADD"
+        case .presentation: return "#7F77DD"
+        case .bridge:       return "#1D9E75"
+        case .integration:  return "#639922"
+        case .events:       return "#E98049"
+        case .reflection:   return "#DF537E"
+        }
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Shared/EventDetail.swift
+========================================
+//
+//  EventDetail.swift
+//  StempCaseStudy  ·  Shared (App + Widget)
+//
+//  Mesmo modelo do app original (EventDetail), mas sem Airtable:
+//  o que antes era uma string "Título - dd/MM/yyyy - link, ..." agora é
+//  uma lista estruturada de entregáveis (mais fácil de usar no Widget).
+//
+import Foundation
+
+struct SupportMaterial: Identifiable, Codable, Hashable {
+    var id: String = UUID().uuidString
+    var filename: String = ""
+    var url: String = ""
+}
+
+struct Deliverable: Identifiable, Codable, Hashable {
+    var id: String = UUID().uuidString
+    var title: String = ""
+    var dueDate: Date = Calendar.current.date(byAdding: .day, value: 7, to: Date()) ?? Date()
+    var url: String = ""
+
+    var formattedDueDate: String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "pt_BR")
+        fmt.dateFormat = "dd/MM/yyyy"
+        return fmt.string(from: dueDate)
+    }
+}
+
+struct EventDetail: Identifiable, Codable, Hashable {
+    let id: String
+    let name: String
+    let typeEvent: String          // rawValue de EventKind
+    let time: Date
+    let icon: String               // SF Symbol
+    let colorHex: String
+    let description: String?
+    let supportMaterial: [SupportMaterial]
+    let deliverables: [Deliverable]
+
+    init(
+        id: String = UUID().uuidString,
+        name: String,
+        typeEvent: String,
+        time: Date,
+        icon: String,
+        colorHex: String,
+        description: String? = nil,
+        supportMaterial: [SupportMaterial] = [],
+        deliverables: [Deliverable] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.typeEvent = typeEvent
+        self.time = time
+        self.icon = icon
+        self.colorHex = colorHex
+        self.description = description
+        self.supportMaterial = supportMaterial
+        self.deliverables = deliverables
+    }
+
+    var formattedDateTime: String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "pt_BR")
+        fmt.dateFormat = "d 'de' MMM 'às' HH:mm"
+        return fmt.string(from: time)
+    }
+
+    var formattedTime: String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "pt_BR")
+        fmt.dateFormat = "HH:mm"
+        return fmt.string(from: time)
+    }
+
+    /// Próximo prazo de entrega ainda não vencido (útil para o Widget).
+    var nextDeliverable: Deliverable? {
+        deliverables
+            .filter { $0.dueDate >= Calendar.current.startOfDay(for: Date()) }
+            .sorted { $0.dueDate < $1.dueDate }
+            .first
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Support/Theme.swift
+========================================
+//
+//  Theme.swift
+//  StempCaseStudy
+//
+//  No projeto original estas cores vivem no Assets.xcassets (bg950, bg900,
+//  gradientStart...). Aqui estão definidas em código como aproximação, para o
+//  projeto rodar sem nenhum asset. Se quiser, substitua pelos valores reais.
+//
+import SwiftUI
+
+extension Color {
+    static let bg950 = Color(hex: "#0B0F19")
+    static let bg900 = Color(hex: "#151B2B")
+    static let gradientStart = Color(hex: "#F2B632")
+    static let gradientEnd = Color(hex: "#EF9F27")
+    static let appGreen = Color(hex: "#1D9E75")
+    static let appAmber = Color(hex: "#EF9F27")
+    static let appRed = Color(hex: "#D85A30")
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/DashboardView.swift
+========================================
+//
+//  DashboardView.swift
+//  StempCaseStudy
+//
+//  Layout idêntico ao DashboardView original. Frequência é fictícia
+//  (valores fixos); o "Próximo evento" vem do EventStore.
+//
+import SwiftUI
+
+struct DashboardView: View {
+    @EnvironmentObject private var store: EventStore
+
+    // Dados fictícios de frequência
+    private let presences = 140
+    private let absences = 3
+    private let delays = 17
+
+    private var attendanceStatus: (label: String, color: Color) {
+        switch absences {
+        case 0: return ("Ótimo", Color(hex: "#1D9E75"))
+        case 1...3: return ("Atenção", Color(hex: "#EF9F27"))
+        default: return ("Crítico", Color(hex: "#D85A30"))
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.bg950.ignoresSafeArea()
+                VStack(spacing: 15) {
+                    AttendanceProgressChart(
+                        presences: presences,
+                        absences: absences,
+                        delays: delays
+                    )
+                    AttendanceStatusCard(
+                        status: attendanceStatus,
+                        absences: absences
+                    )
+                    if let event = store.nextEvent {
+                        NextEventCard(event: event)
+                    } else {
+                        ContentUnavailableView {
+                            VStack {
+                                Image(systemName: "star.slash.fill")
+                                    .font(.system(size: 40))
+                                    .foregroundStyle(.white)
+                                Text("Sem eventos. Novos eventos em breve!")
+                                    .font(.system(size: 15))
+                                    .foregroundStyle(.white.opacity(0.6))
+                            }
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+            }
+            .navigationTitle("Dashboard")
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+    }
+}
+
+#Preview {
+    DashboardView()
+        .environmentObject(EventStore())
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/CreateChallengeView.swift
+========================================
+//
+//  CreateChallengeView.swift
+//  StempCaseStudy
+//
+//  Substitui a tela "Registros" (calendário). Aqui o "mentor" cria desafios,
+//  workshops, apresentações etc. com dados fictícios. O que for criado aparece
+//  em Eventos e no Dashboard e fica salvo no App Group para o Widget.
+//
+import SwiftUI
+
+struct CreateChallengeView: View {
+    @EnvironmentObject private var store: EventStore
+
+    @State private var kind: EventKind = .challenge
+    @State private var name: String = ""
+    @State private var date: Date = CreateChallengeView.defaultDate()
+    @State private var descriptionText: String = ""
+    @State private var icon: String = EventKind.challenge.defaultIcon
+    @State private var colorHex: String = EventKind.challenge.defaultColorHex
+    @State private var materials: [SupportMaterial] = []
+    @State private var deliverables: [Deliverable] = []
+
+    @State private var showCreatedAlert = false
+    @State private var showClearConfirm = false
+    @FocusState private var focused: Bool
+
+    private static let iconOptions: [String] = [
+        "sparkle.text.clipboard.fill", "book.and.wrench.fill", "play.tv",
+        "ruler.fill", "figure.socialdance.circle.fill", "apple.logo",
+        "brain.head.profile.fill", "star.fill", "flag.checkered", "laptopcomputer"
+    ]
+
+    private static let colorOptions: [String] = [
+        "#EF9F27", "#378ADD", "#7F77DD", "#1D9E75",
+        "#639922", "#E98049", "#DF537E", "#4067D0"
+    ]
+
+    private static func defaultDate() -> Date {
+        let cal = Calendar.current
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        return cal.date(bySettingHour: 14, minute: 0, second: 0, of: tomorrow) ?? tomorrow
+    }
+
+    private var isValid: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        ZStack {
+            Color.bg950.ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 18) {
+                    studyCaseBanner
+                    typeSection
+                    basicsSection
+                    appearanceSection
+                    materialsSection
+                    deliverablesSection
+                    createButton
+                    createdListSection
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .scrollDismissesKeyboard(.interactively)
+        }
+        .navigationTitle("Novo desafio")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        store.loadSamples()
+                    } label: {
+                        Label("Carregar exemplos fictícios", systemImage: "wand.and.stars")
+                    }
+                    Button(role: .destructive) {
+                        showClearConfirm = true
+                    } label: {
+                        Label("Apagar todos", systemImage: "trash")
+                    }
+                    .disabled(store.events.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
+        .onChange(of: kind) { _, newKind in
+            icon = newKind.defaultIcon
+            colorHex = newKind.defaultColorHex
+        }
+        .alert("Desafio criado!", isPresented: $showCreatedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Ele já aparece nas abas Eventos e Dashboard e está salvo para o Widget.")
+        }
+        .confirmationDialog("Apagar todos os eventos?", isPresented: $showClearConfirm, titleVisibility: .visible) {
+            Button("Apagar todos", role: .destructive) { store.removeAll() }
+            Button("Cancelar", role: .cancel) {}
+        }
+    }
+
+    // MARK: - Seções
+
+    private var studyCaseBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(Color.gradientStart)
+            Text("Estudo de caso: os dados abaixo são fictícios e substituem o que os mentores preenchem no Airtable.")
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var typeSection: some View {
+        FormCard(title: "Tipo de evento", icon: "tag.fill") {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(EventKind.allCases) { option in
+                        let selected = option == kind
+                        let tint = Color(hex: option.defaultColorHex)
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { kind = option }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: option.defaultIcon)
+                                    .font(.system(size: 12))
+                                Text(option.rawValue)
+                                    .font(.system(size: 13, weight: .medium))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .foregroundStyle(selected ? tint : .white.opacity(0.55))
+                            .background(selected ? tint.opacity(0.18) : Color.white.opacity(0.05))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(selected ? tint.opacity(0.6) : .clear, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private var basicsSection: some View {
+        FormCard(title: "Informações", icon: "text.alignleft") {
+            VStack(alignment: .leading, spacing: 14) {
+                LabeledField(label: "Nome") {
+                    StudyTextField(placeholder: "Ex.: Challenge 3 · Meu primeiro app", text: $name)
+                        .focused($focused)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Data e hora")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.4))
+                    DatePicker("", selection: $date, displayedComponents: [.date, .hourAndMinute])
+                        .labelsHidden()
+                        .datePickerStyle(.compact)
+                        .environment(\.locale, Locale(identifier: "pt_BR"))
+                        .colorScheme(.dark)
+                }
+
+                LabeledField(label: "Descrição (aceita **markdown** simples)") {
+                    TextEditor(text: $descriptionText)
+                        .focused($focused)
+                        .scrollContentBackground(.hidden)
+                        .foregroundStyle(.white)
+                        .frame(minHeight: 110)
+                        .padding(8)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        }
+    }
+
+    private var appearanceSection: some View {
+        FormCard(title: "Aparência", icon: "paintpalette.fill") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Ícone")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.4))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 10) {
+                        ForEach(Self.iconOptions, id: \.self) { symbol in
+                            let selected = symbol == icon
+                            Button { icon = symbol } label: {
+                                Image(systemName: symbol)
+                                    .font(.system(size: 18))
+                                    .frame(width: 44, height: 44)
+                                    .foregroundStyle(selected ? Color(hex: colorHex) : .white.opacity(0.5))
+                                    .background(selected ? Color(hex: colorHex).opacity(0.15) : Color.white.opacity(0.05))
+                                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(selected ? Color(hex: colorHex).opacity(0.6) : .clear, lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Text("Cor")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.4))
+                HStack(spacing: 12) {
+                    ForEach(Self.colorOptions, id: \.self) { hex in
+                        Button { colorHex = hex } label: {
+                            Circle()
+                                .fill(Color(hex: hex))
+                                .frame(width: 28, height: 28)
+                                .overlay(
+                                    Circle()
+                                        .stroke(.white, lineWidth: colorHex == hex ? 2.5 : 0)
+                                        .padding(-3)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.leading, 3)
+
+                // Prévia fiel ao card da aba Eventos
+                Text("Prévia")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.top, 4)
+                EventItem(eventInfos: previewEvent, isNew: false, openEventDetail: {})
+                    .allowsHitTesting(false)
+                    .padding(.horizontal, -5)
+            }
+        }
+    }
+
+    private var materialsSection: some View {
+        FormCard(title: "Material de apoio", icon: "folder") {
+            VStack(spacing: 12) {
+                ForEach($materials) { $item in
+                    VStack(spacing: 8) {
+                        HStack {
+                            StudyTextField(placeholder: "Nome do arquivo (ex.: Briefing.pdf)", text: $item.filename)
+                            removeButton { materials.removeAll { $0.id == item.id } }
+                        }
+                        StudyTextField(placeholder: "https://…", text: $item.url, isURL: true)
+                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                AddRowButton(title: "Adicionar material") {
+                    materials.append(SupportMaterial())
+                }
+            }
+        }
+    }
+
+    private var deliverablesSection: some View {
+        FormCard(title: "Entregáveis e prazos", icon: "arrow.up.doc") {
+            VStack(spacing: 12) {
+                ForEach($deliverables) { $item in
+                    VStack(spacing: 8) {
+                        HStack {
+                            StudyTextField(placeholder: "Título (ex.: Código, Keynote)", text: $item.title)
+                            removeButton { deliverables.removeAll { $0.id == item.id } }
+                        }
+                        HStack {
+                            Text("Entrega")
+                                .font(.caption)
+                                .foregroundStyle(.white.opacity(0.4))
+                            Spacer()
+                            DatePicker("", selection: $item.dueDate, displayedComponents: .date)
+                                .labelsHidden()
+                                .datePickerStyle(.compact)
+                                .environment(\.locale, Locale(identifier: "pt_BR"))
+                                .colorScheme(.dark)
+                        }
+                        StudyTextField(placeholder: "Link do entregável (https://…)", text: $item.url, isURL: true)
+                    }
+                    .padding(10)
+                    .background(Color.white.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                AddRowButton(title: "Adicionar entregável") {
+                    deliverables.append(Deliverable(dueDate: max(date, Date())))
+                }
+            }
+        }
+    }
+
+    private var createButton: some View {
+        Button(action: createChallenge) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill")
+                Text("Criar desafio")
+                    .fontWeight(.semibold)
+            }
+            .font(.system(size: 17))
+            .foregroundStyle(.black.opacity(0.85))
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(
+                LinearGradient(
+                    colors: [.gradientStart, .gradientEnd],
+                    startPoint: .leading, endPoint: .trailing
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .opacity(isValid ? 1 : 0.35)
+        }
+        .disabled(!isValid)
+        .padding(.top, 4)
+    }
+
+    @ViewBuilder
+    private var createdListSection: some View {
+        if !store.events.isEmpty {
+            FormCard(title: "Criados (\(store.events.count))", icon: "checklist") {
+                VStack(spacing: 0) {
+                    ForEach(store.events.sorted { $0.time < $1.time }) { event in
+                        HStack(spacing: 12) {
+                            Image(systemName: event.icon)
+                                .foregroundStyle(Color(hex: event.colorHex))
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(event.name)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(event.formattedDateTime)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.white.opacity(0.4))
+                            }
+                            Spacer()
+                            Button { store.remove(id: event.id) } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.vertical, 10)
+                        if event.id != store.events.sorted(by: { $0.time < $1.time }).last?.id {
+                            Rectangle().fill(Color.white.opacity(0.06)).frame(height: 0.5)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Ações
+
+    private var previewEvent: EventDetail {
+        EventDetail(
+            name: name.isEmpty ? "Nome do desafio" : name,
+            typeEvent: kind.rawValue,
+            time: date,
+            icon: icon,
+            colorHex: colorHex
+        )
+    }
+
+    private func createChallenge() {
+        focused = false
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDesc = descriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let cleanMaterials = materials
+            .filter { !$0.filename.trimmingCharacters(in: .whitespaces).isEmpty }
+        let cleanDeliverables = deliverables
+            .filter { !$0.title.trimmingCharacters(in: .whitespaces).isEmpty }
+
+        let event = EventDetail(
+            name: trimmedName,
+            typeEvent: kind.rawValue,
+            time: date,
+            icon: icon,
+            colorHex: colorHex,
+            description: trimmedDesc.isEmpty ? nil : trimmedDesc,
+            supportMaterial: cleanMaterials,
+            deliverables: cleanDeliverables
+        )
+        store.add(event)
+        resetForm()
+        showCreatedAlert = true
+    }
+
+    private func resetForm() {
+        name = ""
+        descriptionText = ""
+        materials = []
+        deliverables = []
+        date = Self.defaultDate()
+        kind = .challenge
+        icon = kind.defaultIcon
+        colorHex = kind.defaultColorHex
+    }
+
+    private func removeButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "minus.circle.fill")
+                .foregroundStyle(.red.opacity(0.7))
+                .font(.system(size: 20))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Componentes de formulário
+
+private struct FormCard<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+            }
+            .foregroundStyle(.white.opacity(0.4))
+
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 1)
+
+            content
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct LabeledField<Content: View>: View {
+    let label: LocalizedStringKey
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.4))
+            content
+        }
+    }
+}
+
+private struct StudyTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    var isURL: Bool = false
+
+    var body: some View {
+        TextField(
+            "",
+            text: $text,
+            prompt: Text(placeholder).foregroundColor(.white.opacity(0.28))
+        )
+        .keyboardType(isURL ? .URL : .default)
+        .textInputAutocapitalization(isURL ? .never : .sentences)
+        .autocorrectionDisabled(isURL)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct AddRowButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                Text(title)
+            }
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(Color.gradientStart)
+            .frame(maxWidth: .infinity, minHeight: 42)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.gradientStart.opacity(0.5), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+#Preview {
+    NavigationStack {
+        CreateChallengeView()
+    }
+    .environmentObject(EventStore())
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/EventsView.swift
+========================================
+//
+//  EventsView.swift
+//  StempCaseStudy
+//
+//  Layout idêntico ao EventsView original.
+//
+import SwiftUI
+
+struct EventsView: View {
+    @EnvironmentObject private var store: EventStore
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.bg950.ignoresSafeArea(edges: .all)
+                if !store.upcomingEvents.isEmpty {
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 25) {
+                            ForEach(store.upcomingEvents) { event in
+                                EventItem(
+                                    eventInfos: event,
+                                    isNew: store.isNew(event),
+                                    openEventDetail: { store.markAsSeen(event) },
+                                    onDelete: { store.remove(id: event.id) }
+                                )
+                            }
+                        }
+                        .padding(.top, 10)
+                    }
+                } else {
+                    ContentUnavailableView {
+                        VStack {
+                            Image(systemName: "star.slash.fill")
+                                .font(.system(size: 70))
+                                .foregroundStyle(.white)
+                            Text("Sem eventos")
+                                .font(.system(size: 30))
+                                .bold()
+                                .foregroundStyle(.white)
+                        }
+                    } description: {
+                        VStack {
+                            Text("Nenhum evento encontrado.")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.white.opacity(0.4))
+                            Text("Crie um desafio na aba Desafios para ele aparecer aqui.")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Eventos")
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+    }
+}
+
+#Preview {
+    EventsView()
+        .environmentObject(EventStore())
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/Components/EventDetailSheet.swift
+========================================
+//
+//  EventDetailSheet.swift
+//  StempCaseStudy
+//
+//  Mesmo layout do original: Header, Descrição, Material de Apoio e
+//  Links de Entrega (agora vindos da lista estruturada de entregáveis).
+//
+import SwiftUI
+
+struct EventDetailSheet: View {
+    let event: EventDetail
+    @Environment(\.dismiss) var dismiss
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.bg950.ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 24) {
+
+                        // Header
+                        HStack(spacing: 14) {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(hex: event.colorHex).opacity(0.15))
+                                .frame(width: 56, height: 56)
+                                .overlay(
+                                    Image(systemName: event.icon)
+                                        .font(.system(size: 24))
+                                        .symbolRenderingMode(.monochrome)
+                                        .symbolEffect(.wiggle, options: .nonRepeating)
+                                        .foregroundColor(Color(hex: event.colorHex))
+                                )
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(event.name)
+                                    .font(.title2).fontWeight(.bold)
+                                    .foregroundColor(.white)
+                                Text(event.formattedDateTime)
+                                    .font(.subheadline)
+                                    .foregroundColor(.white.opacity(0.5))
+                            }
+                        }
+
+                        // Descrição
+                        if let desc = event.description, !desc.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("Descrição", systemImage: "text.alignleft")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.4))
+                                Text(descAttributed(from: desc))
+                                    .font(.body)
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .lineSpacing(4)
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.06))
+                            .cornerRadius(12)
+                        }
+
+                        // Material de Apoio
+                        if !event.supportMaterial.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("Material de Apoio", systemImage: "folder")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.4))
+                                ForEach(event.supportMaterial) { item in
+                                    AttachmentRow(
+                                        filename: item.filename,
+                                        url: item.url,
+                                        color: Color(hex: event.colorHex)
+                                    )
+                                }
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.06))
+                            .cornerRadius(12)
+                        }
+
+                        // Links de Entrega
+                        if !event.deliverables.isEmpty {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("Links de Entrega", systemImage: "arrow.up.doc")
+                                    .font(.caption)
+                                    .foregroundColor(.white.opacity(0.4))
+                                ForEach(event.deliverables) { item in
+                                    LinksRow(
+                                        deliverable: item,
+                                        color: Color(hex: event.colorHex)
+                                    )
+                                    if item.id != event.deliverables.last?.id {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .frame(height: 2)
+                                            .foregroundStyle(Color.white.opacity(0.06))
+                                    }
+                                }
+                            }
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.06))
+                            .cornerRadius(12)
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Detalhes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Fechar") { dismiss() }
+                        .foregroundColor(.white)
+                }
+            }
+        }
+    }
+
+    private func descAttributed(from raw: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        return (try? AttributedString(markdown: raw, options: options)) ?? AttributedString(raw)
+    }
+}
+
+// MARK: - Rows
+
+struct LinksRow: View {
+    let deliverable: Deliverable
+    let color: Color
+
+    var body: some View {
+        if let link = URL(string: deliverable.url), !deliverable.url.isEmpty {
+            Link(destination: link) { content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: 15) {
+            HStack(spacing: 10) {
+                Text(deliverable.title)
+                    .font(.headline)
+                    .foregroundColor(color)
+                    .lineLimit(1)
+                Spacer()
+                Text("Entrega: \(deliverable.formattedDueDate)")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1)
+            }
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 18))
+                    .foregroundColor(color)
+                Text("Link do entregável")
+                    .font(.subheadline)
+                    .foregroundColor(.white.opacity(0.85))
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.3))
+            }
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+struct AttachmentRow: View {
+    let filename: String
+    let url: String
+    let color: Color
+
+    var body: some View {
+        if let link = URL(string: url), !url.isEmpty {
+            Link(destination: link) { content }
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 18))
+                .foregroundColor(color)
+            Text(filename)
+                .font(.subheadline)
+                .foregroundColor(.white.opacity(0.85))
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "arrow.up.right")
+                .font(.caption)
+                .foregroundColor(.white.opacity(0.3))
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+#Preview {
+    EventDetailSheet(event: SampleData.events()[0])
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/Components/EventItem.swift
+========================================
+//
+//  EventItem.swift
+//  StempCaseStudy
+//
+//  Idêntico ao EventItem original. Único acréscimo: `onDelete` (menu de
+//  contexto) para remover desafios fictícios criados no estudo de caso.
+//
+import SwiftUI
+
+struct EventItem: View {
+    let eventInfos: EventDetail
+    let isNew: Bool
+    let openEventDetail: () -> Void
+    var onDelete: (() -> Void)? = nil
+
+    @State private var showDetail = false
+    @State private var opacity: Bool = false
+
+    var body: some View {
+        HStack {
+            Rectangle()
+                .foregroundStyle(Color(hex: eventInfos.colorHex))
+                .frame(width: 7)
+            VStack(alignment: .leading) {
+                Text(eventInfos.typeEvent)
+                    .font(.title2)
+                    .bold()
+                    .foregroundStyle(.white)
+                Text(eventInfos.formattedDateTime)
+                    .foregroundStyle(Color.white.opacity(0.5))
+            }
+            .padding(.leading, 5)
+            Spacer()
+            Image(systemName: eventInfos.icon)
+                .font(.title)
+                .symbolRenderingMode(.monochrome)
+                .symbolEffect(.wiggle, options: .nonRepeating)
+                .foregroundStyle(Color(hex: eventInfos.colorHex))
+            Image(systemName: "chevron.right")
+                .font(.title3)
+                .foregroundStyle(Color.white.opacity(0.5))
+                .padding(.leading, 10)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isNew {
+                Text("Novo")
+                    .bold()
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 2)
+                    .background(Color.red)
+                    .opacity(opacity ? 1 : 0.4)
+                    .clipShape(Capsule())
+                    .offset(y: -28.5)
+                    .animation(
+                        .easeOut(duration: 1.0).repeatForever(autoreverses: true),
+                        value: opacity
+                    )
+            }
+        }
+        .padding()
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            RoundedRectangle(cornerRadius: 15).foregroundStyle(Color.bg900)
+        )
+        .padding(.horizontal, 5)
+        .contentShape(Rectangle())
+        .onAppear {
+            opacity = true
+        }
+        .onTapGesture {
+            showDetail = true
+            openEventDetail()
+        }
+        .contextMenu {
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Label("Remover desafio", systemImage: "trash")
+                }
+            }
+        }
+        .sheet(isPresented: $showDetail) {
+            EventDetailSheet(event: eventInfos)
+        }
+    }
+}
+
+#Preview {
+    ZStack {
+        Color.bg950.ignoresSafeArea()
+        VStack(spacing: 20) {
+            ForEach(Array(SampleData.events().prefix(3).enumerated()), id: \.offset) { index, event in
+                EventItem(eventInfos: event, isNew: index % 2 == 0) {}
+            }
+        }
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/Components/NextEventCard.swift
+========================================
+//
+//  NextEventCard.swift
+//  StempCaseStudy
+//
+//  Idêntico ao NextEventCard original.
+//
+import SwiftUI
+
+struct NextEventCard: View {
+    let event: EventDetail
+    @State private var visible = false
+    @State private var showDetail = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Próximo evento")
+                .font(.caption)
+                .bold()
+                .foregroundColor(.white)
+            Divider()
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(hex: event.colorHex).opacity(0.15))
+                    .frame(width: 44, height: 44)
+                    .overlay(
+                        Image(systemName: event.icon)
+                            .font(.title2)
+                            .symbolRenderingMode(.monochrome)
+                            .symbolEffect(.wiggle, options: .nonRepeating)
+                            .foregroundColor(Color(hex: event.colorHex))
+                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.name)
+                        .font(.subheadline).fontWeight(.medium)
+                        .foregroundColor(.white)
+                    Text(event.formattedDateTime)
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.45))
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.25))
+            }
+        }
+        .padding()
+        .background(Color.white.opacity(0.06))
+        .cornerRadius(16)
+        .opacity(visible ? 1 : 0)
+        .offset(y: visible ? 0 : 12)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5).delay(0.15)) {
+                visible = true
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { showDetail = true }
+        .sheet(isPresented: $showDetail) {
+            EventDetailSheet(event: event)
+        }
+    }
+}
+
+#Preview {
+    ZStack {
+        Color.bg950.ignoresSafeArea()
+        NextEventCard(event: SampleData.events()[0])
+            .padding()
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/Components/AttendanceStatusCard.swift
+========================================
+//
+//  AttendanceStatusCard.swift
+//  StempCaseStudy
+//
+//  Idêntico ao AttendanceStatusCard original.
+//
+import SwiftUI
+
+struct AttendanceStatusCard: View {
+    let status: (label: String, color: Color)
+    let absences: Int
+
+    @State private var visible = false
+    @State private var pulsing = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Circle()
+                .fill(status.color.opacity(0.15))
+                .frame(width: 44, height: 44)
+                .overlay(
+                    ZStack {
+                        Circle()
+                            .fill(status.color.opacity(0.3))
+                            .frame(width: 12, height: 12)
+                            .scaleEffect(pulsing ? 2.2 : 1)
+                            .opacity(pulsing ? 0 : 1)
+                        Circle()
+                            .fill(status.color)
+                            .frame(width: 12, height: 12)
+                    }
+                )
+                .onAppear {
+                    withAnimation(
+                        .easeInOut(duration: 1.4)
+                        .repeatForever(autoreverses: false)
+                    ) {
+                        pulsing = true
+                    }
+                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Situação atual")
+                    .font(.caption)
+                    .bold()
+                    .foregroundColor(.white)
+                Text(status.label)
+                    .font(.subheadline).fontWeight(.medium)
+                    .foregroundColor(status.color)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("\(absences)")
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(.white)
+                Text(absences == 1 ? "falta" : "faltas")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.4))
+            }
+        }
+        .padding()
+        .background(Color.white.opacity(0.06))
+        .cornerRadius(16)
+        .opacity(visible ? 1 : 0)
+        .offset(y: visible ? 0 : 12)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5)) {
+                visible = true
+            }
+        }
+    }
+}
+
+#Preview {
+    ZStack {
+        Color.bg950.ignoresSafeArea()
+        AttendanceStatusCard(status: (label: "Ótimo", color: .green), absences: 0)
+            .padding()
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/Components/AttendanceProgressChart.swift
+========================================
+//
+//  AttendanceProgressChart.swift
+//  StempCaseStudy
+//
+//  Idêntico ao AttendanceProgressChart original.
+//
+import SwiftUI
+
+struct AttendanceProgressChart: View {
+
+    let presences: Int
+    let absences: Int
+    let delays: Int
+    var startDate: Date? = nil
+
+    @State private var animatedPresences: Double = 0
+    @State private var animatedDelays: Double = 0
+    @State private var animatedAbsences: Double = 0
+    @State private var cardsVisible = false
+
+    private var total: Int { presences + absences + delays }
+
+    private func pct(_ v: Double) -> Double {
+        guard total > 0 else { return 0 }
+        return v / Double(total)
+    }
+
+    private var rows: [(String, Double, Color)] {[
+        ("Presenças", animatedPresences, Color(hex: "#1D9E75")),
+        ("Atrasos", animatedDelays, Color(hex: "#EF9F27")),
+        ("Faltas", animatedAbsences, Color(hex: "#D85A30"))
+    ]}
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Frequência")
+                        .font(.subheadline).fontWeight(.medium)
+                        .foregroundColor(.white)
+                    if let start = startDate {
+                        Text("\(start.formatted(.dateTime.day().month(.abbreviated).year())) — Hoje")
+                            .font(.caption2)
+                            .foregroundColor(.white.opacity(0.35))
+                    }
+                }
+                Spacer()
+                Text("\(total) registros")
+                    .font(.caption)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Color.white.opacity(0.07))
+                    .clipShape(Capsule())
+                    .foregroundColor(.white.opacity(0.45))
+            }
+
+            VStack(spacing: 20) {
+                ForEach(rows, id: \.0) { label, animated, color in
+                    VStack(spacing: 7) {
+                        HStack(alignment: .lastTextBaseline) {
+                            Text(label)
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.55))
+                            Spacer()
+                            Text(total > 0 ? "\(Int(pct(animated) * 100))%" : "0%")
+                                .font(.caption)
+                                .foregroundColor(.white.opacity(0.35))
+                        }
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 999)
+                                    .fill(Color.white.opacity(0.07))
+                                    .frame(height: 10)
+                                RoundedRectangle(cornerRadius: 999)
+                                    .fill(color)
+                                    .frame(width: geo.size.width * pct(animated), height: 10)
+                            }
+                        }
+                        .frame(height: 10)
+                    }
+                }
+            }
+
+            Divider().overlay(Color.white.opacity(0.07))
+
+            HStack(spacing: 8) {
+                ForEach(Array([
+                    ("Presenças", presences, Color(hex: "#1D9E75")),
+                    ("Atrasos", delays, Color(hex: "#EF9F27")),
+                    ("Faltas", absences, Color(hex: "#D85A30")),
+                    ("Total", total, Color.white.opacity(0.6))
+                ].enumerated()), id: \.offset) { index, item in
+                    VStack(spacing: 3) {
+                        Text("\(item.1)")
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundColor(item.2)
+                        Text(item.0)
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.35))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(10)
+                    .opacity(cardsVisible ? 1 : 0)
+                    .offset(y: cardsVisible ? 0 : 8)
+                    .animation(
+                        .easeOut(duration: 0.5).delay(0.7 + Double(index) * 0.12),
+                        value: cardsVisible
+                    )
+                }
+            }
+        }
+        .padding()
+        .cornerRadius(16)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.1)) {
+                animatedPresences = Double(presences)
+                animatedDelays = Double(delays)
+                animatedAbsences = Double(absences)
+            }
+            cardsVisible = true
+        }
+    }
+}
+
+#Preview {
+    ZStack {
+        Color.bg900.ignoresSafeArea()
+        AttendanceProgressChart(presences: 140, absences: 3, delays: 17)
+    }
+}
+
+
+========================================
+ARQUIVO: ./StempCaseStudy/Views/StudyCasePlaceholderView.swift
+========================================
+//
+//  StudyCasePlaceholderView.swift
+//  StempCaseStudy
+//
+//  Tela vazia usada nas páginas que não fazem parte do recorte.
+//
+import SwiftUI
+
+struct StudyCasePlaceholderView: View {
+    let title: String
+    let icon: String
+
+    var body: some View {
+        ZStack {
+            Color.bg950.ignoresSafeArea()
+            VStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 60))
+                    .foregroundStyle(.white.opacity(0.25))
+                Text("Este projeto é para fins de estudo de caso")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .multilineTextAlignment(.center)
+                Text("Esta página não faz parte do recorte replicado.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white.opacity(0.35))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 40)
+        }
+        .navigationTitle(title)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+    }
+}
+
+#Preview {
+    NavigationStack {
+        StudyCasePlaceholderView(title: "Perfil", icon: "person.crop.circle.fill")
+    }
+}
+
+
