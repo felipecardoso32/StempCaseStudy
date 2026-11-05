@@ -75,7 +75,6 @@ private enum WidgetFormat {
 // MARK: - Helpers do modelo
 
 private extension EventDetail {
-    var accent: Color { Color(hex: colorHex) }
 
     /// "Challenge 6 - Apple Technologies" → ("Challenge 6", "Apple Technologies").
     /// Sem separador, usa o tipo do evento como prefixo.
@@ -164,30 +163,28 @@ struct Provider: TimelineProvider {
 
 private struct IconTile: View {
     let symbol: String
-    let color: Color
     var size: CGFloat = 32
 
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: size * 0.5, weight: .semibold))
-            .foregroundStyle(color)
+            .foregroundStyle(.accent)
             .frame(width: size, height: size)
-            .background(color.opacity(0.18), in: RoundedRectangle(cornerRadius: size * 0.3))
+            .background(.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: size * 0.3))
     }
 }
 
 private struct DayBadge: View {
     let text: String
-    let color: Color
 
     var body: some View {
         Text(text)
             .font(.system(size: 10, weight: .heavy))
             .tracking(0.6)
-            .foregroundStyle(color)
+            .foregroundStyle(.accent)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(color.opacity(0.18), in: Capsule())
+            .background(.accent.opacity(0.18), in: Capsule())
     }
 }
 
@@ -221,9 +218,9 @@ private struct SmallView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
-                    IconTile(symbol: event.icon, color: event.accent, size: 32)
+                    IconTile(symbol: event.icon, size: 32)
                     Spacer(minLength: 4)
-                    DayBadge(text: event.badgeText(relativeTo: entry.date), color: .accent)
+                    DayBadge(text: event.badgeText(relativeTo: entry.date))
                 }
 
                 Spacer(minLength: 6)
@@ -336,7 +333,7 @@ private struct MediumView: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
-                IconTile(symbol: "list.clipboard.fill", color: .accent, size: 38)
+                IconTile(symbol: "list.clipboard.fill", size: 38)
                 Text("Eventos")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
