@@ -25,9 +25,8 @@ import SwiftUI
 // MARK: - Tema (local, não depende do Theme.swift do app)
 
 private enum WidgetTheme {
-    static let accent = Color(hex: "#EF9F27")
-    static let secondaryText = Color.white.opacity(0.5)
-    static let cardBackground = Color.white.opacity(0.06)
+    //static let secondaryText = Color.white.opacity(0.5)
+    //static let cardBackground = Color.white.opacity(0.06)
 
     static var smallBackground: LinearGradient {
         LinearGradient(
@@ -197,13 +196,13 @@ private struct EmptyStateView: View {
         VStack(spacing: 6) {
             Image(systemName: "star.slash.fill")
                 .font(.system(size: 22))
-                .foregroundStyle(WidgetTheme.accent)
+                .foregroundStyle(.accent)
             Text("Sem eventos")
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white)
             Text("Novos eventos em breve!")
                 .font(.system(size: 10))
-                .foregroundStyle(WidgetTheme.secondaryText)
+                .foregroundStyle(Color.white.opacity(0.5))
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -224,19 +223,19 @@ private struct SmallView: View {
                 HStack(alignment: .top) {
                     IconTile(symbol: event.icon, color: event.accent, size: 32)
                     Spacer(minLength: 4)
-                    DayBadge(text: event.badgeText(relativeTo: entry.date), color: event.accent)
+                    DayBadge(text: event.badgeText(relativeTo: entry.date), color: .accent)
                 }
 
                 Spacer(minLength: 6)
 
                 Text(parts.prefix)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(WidgetTheme.secondaryText)
+                    .foregroundStyle(.secondaryText)
                     .lineLimit(1)
 
                 Text(parts.title)
                     .font(.system(size: 19, weight: .bold))
-                    .foregroundStyle(event.accent)
+                    .foregroundStyle(.accent)
                     .lineLimit(2)
                     .minimumScaleFactor(0.7)
                     .padding(.top, 1)
@@ -274,7 +273,7 @@ private struct EventRow: View {
     var body: some View {
         HStack(spacing: 8) {
             RoundedRectangle(cornerRadius: 2)
-                .fill(event.accent)
+                .fill(.accent)
                 .frame(width: 4)
                 .padding(.vertical, 1)
 
@@ -286,7 +285,7 @@ private struct EventRow: View {
                     .minimumScaleFactor(0.85)
                 Text(subtitle)
                     .font(.system(size: 11))
-                    .foregroundStyle(WidgetTheme.secondaryText)
+                    .foregroundStyle(Color.white.opacity(0.5))
                     .lineLimit(1)
             }
 
@@ -294,12 +293,12 @@ private struct EventRow: View {
 
             Image(systemName: event.icon)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(event.accent)
+                .foregroundStyle(.accent)
         }
         .padding(.vertical, 7)
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(WidgetTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -326,7 +325,7 @@ private struct MediumView: View {
         VStack(alignment: .leading, spacing: 0) {
             Text(WidgetFormat.weekday(entry.date))
                 .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(WidgetTheme.accent)
+                .foregroundStyle(.accent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
 
@@ -337,7 +336,7 @@ private struct MediumView: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
-                IconTile(symbol: "sparkle.text.clipboard.fill", color: WidgetTheme.accent, size: 38)
+                IconTile(symbol: "list.clipboard.fill", color: .accent, size: 38)
                 Text("Eventos")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
@@ -358,7 +357,7 @@ private struct MediumView: View {
                         Text(label)
                             .font(.system(size: 9, weight: .semibold))
                             .tracking(0.8)
-                            .foregroundStyle(WidgetTheme.secondaryText)
+                            .foregroundStyle(Color.white.opacity(0.5))
                     }
                     EventRow(event: event, now: entry.date, titleLines: index == 0 ? 2 : 1)
                 }
@@ -412,12 +411,10 @@ struct StempWidget: Widget {
         }
         .configurationDisplayName("Próximos eventos")
         .description("Acompanhe seus desafios e eventos da Academy.")
-        // 🔒 Apenas pequeno e médio. Large e ExtraLarge não aparecem na galeria.
+
         .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
-
-// MARK: - Dados de exemplo (placeholder e Preview)
 
 extension StempEntry {
     static var sampleEvents: [EventDetail] {
@@ -430,14 +427,14 @@ extension StempEntry {
                 name: "Challenge 6 - Apple Technologies",
                 typeEvent: "Challenge",
                 time: today18,
-                icon: "sparkle.text.clipboard.fill",
+                icon: "list.clipboard.fill",
                 colorHex: "#EF9F27"
             ),
             EventDetail(
                 name: "PoC presentation",
                 typeEvent: "Apresentação",
                 time: nextWeek,
-                icon: "sparkle.text.clipboard.fill",
+                icon: "list.clipboard.fill",
                 colorHex: "#EF9F27"
             )
         ]
